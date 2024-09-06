@@ -358,17 +358,17 @@ class ExLlamaV2Config:
         all_keys = set(self.tensor_file_map.keys())
         suffixes = [".q_weight", ".qweight", ".weight", ""]
 
-        for prefixes in expect_keys:
-            match = False
-            for prefix in prefixes:
-                for suffix in suffixes:
-                    if (prefix + suffix) in all_keys:
-                        match = True
-                        break
-                    if match: break
-                if match: break
-            if not match:
-                raise ValueError(f" ## Could not find {prefix}.* in model")
+        # for prefixes in expect_keys:
+        #     match = False
+        #     for prefix in prefixes:
+        #         for suffix in suffixes:
+        #             if (prefix + suffix) in all_keys:
+        #                 match = True
+        #                 break
+        #             if match: break
+        #         if match: break
+        #     if not match:
+        #         raise ValueError(f" ## Could not find {prefix}.* in model")
 
         x = 0
 

@@ -1,3 +1,14 @@
+#!/usr/bin/env python
+# coding=utf-8
+'''
+Description  :  
+Author       : Azure-Tang
+Date         : 2024-09-05 03:49:40
+Version      : 1.0.0
+LastEditors  : Azure 
+LastEditTime : 2024-09-05 11:42:16
+Copyright (c) 2024 by KVCache.AI, All Rights Reserved. 
+'''
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -5,12 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_TP, ExLlamaV2Tokenizer, Timer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2Sampler
 
-model_dir = "/data/qwen72b_5/Qwen2-72B-Instruct-exl2"
-print(f"Loading model from {model_dir}")
+model_dir = "/model/Qwen1.5-7B/3.0bpw_tp2"
 config = ExLlamaV2Config(model_dir)
 config.arch_compat_overrides()
 config.no_graphs = True
-model = ExLlamaV2(config)
+model = ExLlamaV2(config, tp_degree=2)
 
 # Load the model in tensor-parallel mode. With no gpu_split specified, the model will attempt to split across
 # all visible devices according to the currently available VRAM on each. expect_cache_tokens is necessary for

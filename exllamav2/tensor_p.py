@@ -111,7 +111,8 @@ class TPContext:
             gpu_memory = get_all_gpu_memory()
             gpu_split = [0] * (max(gpu_memory.keys()) + 1)
             for k, v in gpu_memory.items():
-                gpu_split[k] = v["free"]
+                gpu_split[k] = v["total"]
+                # gpu_split[k] = v["free"]
         else:
             gpu_split = [gs * 1024 for gs in gpu_split]
 
@@ -179,6 +180,15 @@ class TPContext:
         self.device = self.all_devs[0]
         self.num_devices = max(self.all_devs) + 1
 
+    def all_reduce_sp(self, inputs: list[torch.Tensor]):
+        all_reduce_buffer = [torch.empty_like(t) for t in inputs]
+        # memcp from input to buffer
+        all_reduce_buffer[0].copy_(inputs[1], non_blocking=True)
+        all_reduce_buffer[1].copy_(inputs[0], non_blocking=True)
+        # add
+        inputs[0].add_(all_reduce_buffer[0])
+        inputs[1].add_(all_reduce_buffer[1])
+        return inputs
 
     def finalize(self):
         cfg = self.model.config
@@ -376,6 +386,18 @@ class TPContext:
             torch.cuda.set_stream(context.stream)
             target[idx].add_(source[idx][:, a * dim : b * dim])
 
+    def add_residual_sp(
+        self,
+        target: list[torch.Tensor],
+        source: list[torch.Tensor],
+        dim: int = 1
+    ):
+        split = self.get_split(BROADCAST_RS)
+
+        for idx, (dev, a, b) in enumerate(split):
+            context = self.model.get_device_context(dev)
+            torch.cuda.set_stream(context.stream)
+            target[idx].add_(source[idx])
 
     def wait_streams(self):
         for dev in self.all_devs:

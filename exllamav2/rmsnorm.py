@@ -213,7 +213,8 @@ class ExLlamaV2RMSNorm(ExLlamaV2Module):
         new_weight = []
         new_bias = []
 
-        for idx, a, b in split:
+        # for idx, a, b in split:
+        for idx, a, b in split[:2]:
             s = b - a
             if s == 0: continue
 

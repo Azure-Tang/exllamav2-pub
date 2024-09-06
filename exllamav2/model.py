@@ -76,7 +76,9 @@ class ExLlamaV2:
 
     tp_context: TPContext | None
 
-    def __init__(self, config: ExLlamaV2Config, lazy_load = False):
+    def __init__(self, config: ExLlamaV2Config, lazy_load = False, tp_degree = 1):
+
+        assert tp_degree == 1 or tp_degree == 2, "Only 1 or 2-way tensor parallelism is supported"
 
         self.config = config
         self.modules = []
@@ -94,7 +96,7 @@ class ExLlamaV2:
         if self.config.arch.learned_pos_emb_key:
             pos_emb = ExLlamaV2PosEmbedding(self, self.config.arch.learned_pos_emb_key)
             self.modules += [pos_emb]
-
+        # self.config.num_hidden_layers = 2
         for layer_idx in range(self.config.num_hidden_layers):
 
             layer_key = f"model.layers.{layer_idx}"
@@ -108,10 +110,11 @@ class ExLlamaV2:
                     swa = self.config.sliding_window
                 else:
                     swa = 0
-                attn = ExLlamaV2Attention(self, layer_key, layer_idx, sliding_window = swa)
+                attn = ExLlamaV2Attention(self, layer_key, layer_idx, sliding_window = swa, tp_degree=tp_degree)
                 if self.config.arch.is_moe: mlp = ExLlamaV2MoEMLP(self, layer_key, layer_idx)
-                else: mlp = ExLlamaV2MLP(self, layer_key, layer_idx)
+                else: mlp = ExLlamaV2MLP(self, layer_key, layer_idx, tp_degree=tp_degree)
                 self.modules += [attn, mlp]
+                # self.modules += [mlp]
 
         if self.config.arch.norm == "layernorm": norm = ExLlamaV2LayerNorm(self, "model.norm")
         elif self.config.arch.norm == "rmsnorm": norm = ExLlamaV2RMSNorm(self, "model.norm")
@@ -119,14 +122,16 @@ class ExLlamaV2:
         self.modules += [norm]
 
         self.head_layer_idx = len(self.modules)
-        head = ExLlamaV2Linear(self, "lm_head",
+        tp_key = ".tp_degree2" if tp_degree==2 else ""
+        head = ExLlamaV2Linear(self, "lm_head" + tp_key,
                                self.config.hidden_size,
                                self.config.vocab_size,
                                False,
                                max_out_len = self.config.max_output_len,
                                prescale = self.config.logit_scale,
                                is_sub_module = False,
-                               normalize_unq = bool(self.config.norm_head))
+                               normalize_unq = bool(self.config.norm_head),
+                               tp_degree=tp_degree)
         if self.config.arch.lm_head_key != "lm_head":
             head.alt_key = self.config.arch.lm_head_key
         self.modules += [head]
@@ -427,7 +432,7 @@ class ExLlamaV2:
                 if isinstance(module, ExLlamaV2RMSNorm):
                     module.tp_split(BROADCAST_VC)
                 elif isinstance(module, ExLlamaV2Linear):
-                    module.tp_split(BROADCAST_VC)
+                    module.tp_split_sp(BROADCAST_VC)
 
                 module.set_device_idx(None)
 
@@ -975,9 +980,9 @@ class ExLlamaV2:
 
             x = module.forward(x, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
 
-            if preprocess_only and idx == self.last_kv_layer_idx:
-                x = None
-                break
+            # if preprocess_only and idx == self.last_kv_layer_idx:
+            #     x = None
+            #     break
 
         # Advance cache
 

@@ -134,7 +134,9 @@ class ExLlamaV2Attention(ExLlamaV2Module):
                  layer_idx: int,
                  has_norm: bool = True,
                  has_residual: bool = True,
-                 sliding_window: int = 0):
+                 sliding_window: int = 0,
+                 tp_degree: int = 1,
+                 ):
 
         super().__init__(model, key)
 
@@ -148,6 +150,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
 
         self.q_handle = None
         self.temp_lora_size = 0
+        self.tp_degree = tp_degree
 
         hidden_size = cfg.hidden_size
 
@@ -168,10 +171,12 @@ class ExLlamaV2Attention(ExLlamaV2Module):
         f_d = f_c + cfg.num_key_value_heads * cfg.head_dim
         f_key = (key + ".self_attn." + cfg.arch.fused_qkv_key) if cfg.arch.fused_qkv_key else None
 
-        self.q_proj = ExLlamaV2Linear(model, key + ".self_attn.q_proj", hidden_size, cfg.num_attention_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_a, f_end = f_b, altpack_qkv = cfg.arch.fused_qkv_altpack)
-        self.k_proj = ExLlamaV2Linear(model, key + ".self_attn.k_proj", hidden_size, cfg.num_key_value_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_b, f_end = f_c, altpack_qkv = cfg.arch.fused_qkv_altpack)
-        self.v_proj = ExLlamaV2Linear(model, key + ".self_attn.v_proj", hidden_size, cfg.num_key_value_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_c, f_end = f_d, altpack_qkv = cfg.arch.fused_qkv_altpack)
-        self.o_proj = ExLlamaV2Linear(model, key + ".self_attn.o_proj", cfg.num_attention_heads * cfg.head_dim, hidden_size, cfg.arch.attention_bias_o, prescale = cfg.scale_depth)
+        tp_key = ".tp_degree2" if self.tp_degree!=1 else ""
+
+        self.q_proj = ExLlamaV2Linear(model, key + ".self_attn.q_proj" + tp_key, hidden_size, cfg.num_attention_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_a, f_end = f_b, altpack_qkv = cfg.arch.fused_qkv_altpack, tp_degree=tp_degree)
+        self.k_proj = ExLlamaV2Linear(model, key + ".self_attn.k_proj" + tp_key, hidden_size, cfg.num_key_value_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_b, f_end = f_c, altpack_qkv = cfg.arch.fused_qkv_altpack, tp_degree=tp_degree)
+        self.v_proj = ExLlamaV2Linear(model, key + ".self_attn.v_proj" + tp_key, hidden_size, cfg.num_key_value_heads * cfg.head_dim, cfg.arch.attention_bias_qkv, f_key = f_key, f_beg = f_c, f_end = f_d, altpack_qkv = cfg.arch.fused_qkv_altpack, tp_degree=tp_degree)
+        self.o_proj = ExLlamaV2Linear(model, key + ".self_attn.o_proj" + tp_key, cfg.num_attention_heads * cfg.head_dim, hidden_size, cfg.arch.attention_bias_o, prescale = cfg.scale_depth, tp_degree=tp_degree)
 
         if cfg.use_qk_norm:
             self.q_norm = ExLlamaV2HeadNorm(model, key + ".self_attn.q_norm", cfg.num_attention_heads, cfg.head_dim)
@@ -447,7 +452,7 @@ class ExLlamaV2Attention(ExLlamaV2Module):
     ) -> torch.Tensor:
 
         if self.is_tp:
-            return self.forward_paged_tp(
+            return self.forward_paged_tp_old(
                 hidden_states,
                 cache,
                 attn_params,
@@ -813,19 +818,24 @@ class ExLlamaV2Attention(ExLlamaV2Module):
 
         # Output projection
 
-        attn_outputs = self.model.tp_context.allgather(1, attn_outputs, BROADCAST_Q, BROADCAST_Q, dim = cfg.head_dim)
+        # attn_outputs = self.model.tp_context.allgather(1, attn_outputs, BROADCAST_Q, BROADCAST_Q, dim = cfg.head_dim)
 
-        hidden_states = self.o_proj.forward_tp(attn_outputs, loras = loras, dim = cfg.head_dim, output_split = True)
+        hidden_states = self.o_proj.forward_tp_row(attn_outputs, loras = loras, dim = cfg.head_dim, output_split = True)
+
+        # all reduce
+        hidden_states = self.model.tp_context.all_reduce_sp(hidden_states)
+        
 
         if self.has_residual:
-            self.model.tp_context.add_residual(hidden_states, residual, BROADCAST_Q, dim = cfg.head_dim)
+            self.model.tp_context.add_residual_sp(hidden_states, residual, dim = cfg.head_dim)
 
-        hidden_states = self.model.tp_context.gather(0, hidden_states, BROADCAST_Q, dim = cfg.head_dim)
+        # hidden_states = self.model.tp_context.gather(0, hidden_states, BROADCAST_Q, dim = cfg.head_dim)
 
         # if self.post_layernorm:  # TODO: ...
         #     hidden_states = self.post_layernorm.forward(hidden_states)
 
-        hidden_states = hidden_states.view(batch_size, q_len, hidden_states.shape[-1])
+        hidden_states = hidden_states[0].view(batch_size, q_len, hidden_states[0].shape[-1])
+        # hidden_states = [ hs.view(batch_size, q_len, hs.shape[-1]) for hs in hidden_states ]
         return hidden_states
 
 
@@ -1439,10 +1449,10 @@ class ExLlamaV2Attention(ExLlamaV2Module):
         if self.post_layernorm is not None:
             self.post_layernorm.tp_split(BROADCAST_KV)
 
-        self.q_proj.tp_split(BROADCAST_Q, dim = cfg.head_dim)
-        self.k_proj.tp_split(BROADCAST_KV, dim = cfg.head_dim)
-        self.v_proj.tp_split(BROADCAST_KV, dim = cfg.head_dim)
-        self.o_proj.tp_split(BROADCAST_Q, dim = cfg.head_dim)
+        self.q_proj.tp_split_sp(BROADCAST_Q, dim = cfg.head_dim)
+        self.k_proj.tp_split_sp(BROADCAST_KV, dim = cfg.head_dim)
+        self.v_proj.tp_split_sp(BROADCAST_KV, dim = cfg.head_dim)
+        self.o_proj.tp_split_sp(BROADCAST_Q, dim = cfg.head_dim)
 
         maxrows = cfg.max_batch_size * cfg.max_input_len
         dtype = torch.half

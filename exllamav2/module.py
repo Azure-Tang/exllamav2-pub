@@ -24,6 +24,7 @@ class ExLlamaV2Module:
     footprint: int
     submodules: list[ExLlamaV2Module]
     assumed_footprint: int
+    tp_degree: int | None
 
     def __init__(self,
                  model: ExLlamaV2,
@@ -34,6 +35,7 @@ class ExLlamaV2Module:
         self.alt_key = None
         self.footprint = -1
         self.submodules = []
+        self.tp_degree = None
 
 
     def numel(self): raise(NotImplementedError())
@@ -98,10 +100,14 @@ class ExLlamaV2Module:
         if override_key is not None:
             keys = [override_key]
         else:
-            keys = [self.key]
+            if self.tp_degree and self.tp_degree == 2:
+                keys = [self.key+f".{i}" for i in range(2)]
+            else:
+                keys = [self.key]
             if self.alt_key is not None:
                 keys += [self.alt_key]
 
+        res = []
         for key in keys:
 
             # EXL2
@@ -109,7 +115,8 @@ class ExLlamaV2Module:
             if key + ".q_weight" in self.model.config.tensor_file_map:
                 qtensors = self.load_multi(key, ["q_weight", "q_invperm", "q_scale", "q_scale_max", "q_groups", "q_perm", "bias"], cpu = cpu)
                 qtensors["q_perm"] = torch.argsort(qtensors["q_invperm"]).to(torch.int)
-                return qtensors
+                # return qtensors
+                res.append(qtensors)
 
             # GPTQ
 
@@ -118,7 +125,8 @@ class ExLlamaV2Module:
                 if "bias" in qtensors and torch.all(qtensors["bias"].eq(0)):
                     del qtensors["bias"]
                 qtensors["scales"] = qtensors["scales"].half()
-                return qtensors
+                # return qtensors
+                res.append(qtensors)
 
             # Torch
 
@@ -129,17 +137,20 @@ class ExLlamaV2Module:
                     bias = tensors["bias"].half()
                     if self.model.config.arch.orig_weights_transposed and len(tensor.shape) == 2:
                         tensor = tensor.T
-                    return nn.Parameter(tensor, requires_grad = False), nn.Parameter(bias, requires_grad = False)
+                    # return nn.Parameter(tensor, requires_grad = False), nn.Parameter(bias, requires_grad = False)
+                    res.append((nn.Parameter(tensor, requires_grad = False), nn.Parameter(bias, requires_grad = False)))
                 else:
                     tensors = self.load_multi(key, ["weight"], cpu = cpu)
                     tensor = tensors["weight"].half()
                     # if self.model.config.arch.orig_weights_transposed:
                     #     tensor = tensor.T
-                    return nn.Parameter(tensor, requires_grad = False)
+                    # return nn.Parameter(tensor, requires_grad = False)
+                    res.append(nn.Parameter(tensor, requires_grad = False))
+
 
             # No weights found for key
-
-        return None
+        if len(res) == 1: return res[0]
+        else: return res
 
 
     def load_weight_fused(self,

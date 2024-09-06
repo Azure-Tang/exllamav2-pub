@@ -43,7 +43,8 @@ class ExLlamaV2MLP(ExLlamaV2Module):
                  key: str,
                  layer_idx: int,
                  has_norm: bool = True,
-                 has_residual: bool = True):
+                 has_residual: bool = True,
+                 tp_degree: int = 1):
 
         super().__init__(model, key)
         cfg = self.model.config
@@ -57,6 +58,8 @@ class ExLlamaV2MLP(ExLlamaV2Module):
 
         self.q_handle = None
         self.temp_lora_size = 0
+        self.tp_degree = tp_degree
+        tp_key = ".tp_degree2" if self.tp_degree==2 else ""
 
         f_a = 0
         f_b = cfg.intermediate_size
@@ -74,8 +77,8 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             self.pre_layernorm = None
             self.post_layernorm = None
 
-        self.up_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_up, cfg.hidden_size, cfg.intermediate_size, self.model.config.arch.mlp_bias, f_key = f_key, f_beg = f_b, f_end = f_c)
-        self.down_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_down, cfg.intermediate_size, cfg.hidden_size, self.model.config.arch.mlp_bias, prescale = cfg.scale_depth)
+        self.up_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_up + tp_key, cfg.hidden_size, cfg.intermediate_size, self.model.config.arch.mlp_bias, f_key = f_key, f_beg = f_b, f_end = f_c, tp_degree=tp_degree)
+        self.down_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_down + tp_key, cfg.intermediate_size, cfg.hidden_size, self.model.config.arch.mlp_bias, prescale = cfg.scale_depth, tp_degree=tp_degree)
 
         self.submodules = [self.up_proj,
                            self.down_proj]
@@ -85,7 +88,7 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             self.submodules += [self.post_layernorm]
 
         if cfg.arch.mlp_gate:
-            self.gate_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_gate, cfg.hidden_size, cfg.intermediate_size, self.model.config.arch.mlp_bias, f_key = f_key, f_beg = f_a, f_end = f_b)
+            self.gate_proj = ExLlamaV2Linear(model, key + cfg.arch.mlp_key_gate + tp_key, cfg.hidden_size, cfg.intermediate_size, self.model.config.arch.mlp_bias, f_key = f_key, f_beg = f_a, f_end = f_b, tp_degree=tp_degree)
             self.submodules += [self.gate_proj]
         else:
             self.gate_proj = None
@@ -127,9 +130,14 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             self.gate_proj.load(w1, device_context = device_context)
             self.up_proj.load(w2, device_context = device_context)
         else:
-            down_map = self.down_proj.load(device_context = device_context, unmap = True)
-            if self.gate_proj is not None: self.gate_proj.load(device_context = device_context, output_map = down_map)
-            self.up_proj.load(device_context = device_context, output_map = down_map)
+            if self.tp_degree == 2:
+                self.down_proj.load(device_context = device_context) 
+                if self.gate_proj is not None: self.gate_proj.load(device_context = device_context)
+                self.up_proj.load(device_context = device_context)
+            else:
+                down_map = self.down_proj.load(device_context = device_context, unmap = True)
+                if self.gate_proj is not None: self.gate_proj.load(device_context = device_context, output_map = down_map)
+                self.up_proj.load(device_context = device_context, output_map = down_map)
 
         if self.up_proj.is_quant():
             assert self.gate_proj is None or self.gate_proj.is_quant()
@@ -287,7 +295,7 @@ class ExLlamaV2MLP(ExLlamaV2Module):
     ) -> torch.Tensor | dict[str: torch.Tensor]:
 
         if self.is_tp:
-            return self.forward_tp(
+            return self.forward_tp_old(
                 hidden_states,
                 cache,
                 attn_params,
@@ -398,15 +406,16 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             # output.clamp_(min = -65504.0, max = 65504.0)
             outputs.append(output)
 
-        outputs = self.model.tp_context.allgather(1, outputs, BROADCAST_ID, BROADCAST_ID)
+        # outputs = self.model.tp_context.allgather(1, outputs, BROADCAST_ID, BROADCAST_ID)
 
-        down = self.down_proj.forward_tp(outputs, output_split = True)
+        down = self.down_proj.forward_tp_row(outputs, output_split = True)
 
         if self.has_residual:
-            self.model.tp_context.add_residual(down, residual, BROADCAST_RS)
+            self.model.tp_context.add_residual_sp(down, residual)
 
-        down = self.model.tp_context.gather(0, down, BROADCAST_RS)
-        down = down.view(batch_size, q_len, down.shape[-1])
+        # down = self.model.tp_context.gather(0, down, BROADCAST_RS)
+        down = self.model.tp_context.all_reduce_sp(down)
+        down = down[0].view(batch_size, q_len, down[0].shape[-1])
         return down
 
 
@@ -509,11 +518,11 @@ class ExLlamaV2MLP(ExLlamaV2Module):
         if self.post_layernorm is not None:
             self.post_layernorm.tp_split(BROADCAST_RS)
         if self.gate_proj is not None:
-            self.gate_proj.tp_split(BROADCAST_ID)
+            self.gate_proj.tp_split_sp(BROADCAST_ID)
         if self.up_proj is not None:
-            self.up_proj.tp_split(BROADCAST_ID)
+            self.up_proj.tp_split_sp(BROADCAST_ID)
         if self.down_proj is not None:
-            self.down_proj.tp_split(BROADCAST_RS)
+            self.down_proj.tp_split_sp(BROADCAST_RS)
 
         maxrows = cfg.max_batch_size * cfg.max_input_len
         dtype = torch.half

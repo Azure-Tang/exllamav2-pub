@@ -6,7 +6,7 @@ from exllamav2 import ext
 from exllamav2.ext import exllamav2_ext as ext_c, none_tensor
 from exllamav2.module import ExLlamaV2Module
 from exllamav2.compat import safe_move_tensor
-from exllamav2.tensor_p import BROADCAST_VC
+from exllamav2.tensor_p import BROADCAST_VC, BROADCAST_RS
 from exllamav2.util import unpack_4bit, pack_4bit
 import gc
 
@@ -65,7 +65,8 @@ class ExLlamaV2Linear(ExLlamaV2Module):
                  f_end: int = None,
                  is_sub_module: bool = True,
                  altpack_qkv: bool = False,
-                 normalize_unq: bool = False):
+                 normalize_unq: bool = False,
+                 tp_degree: int = 1):
         super().__init__(model, key)
 
         self.is_sub_module = is_sub_module
@@ -107,6 +108,7 @@ class ExLlamaV2Linear(ExLlamaV2Module):
         self.normalize_unq = normalize_unq
 
         self.out_features_tp = None
+        self.tp_degree = tp_degree
 
 
     @torch.inference_mode
@@ -162,6 +164,35 @@ class ExLlamaV2Linear(ExLlamaV2Module):
 
             if unmap:
                 return perm
+
+        elif isinstance(w, list):
+            new_q_handles = []
+            new_q_tensors = []
+            for i, w_ in enumerate(w):   
+                assert not cfg.load_in_q4, "Can't load quantized layer in Q4 mode"
+                if self.has_bias:
+                    assert "bias" in w_, self.key + " has no bias but bias expected"
+                else:
+                    assert "bias" not in w_, self.key + " has bias but bias is not expected"
+                if device_context:
+                    device_context = self.model.get_device_context(self.device_idx)
+                    device_context.begin_scratch_alloc()
+                    self.temp_dq = device_context.get_scratch_slice(self.temp_dq_size())
+                else:
+                    self.temp_dq = none_tensor
+                new_q_tensors.append(w_)
+
+                new_q_handle = ext.make_q_matrix(w_,
+                                        self.temp_dq,
+                                        prescale = self.prescale,
+                                        max_dq_rows = cfg.max_dq_size // self.out_features,
+                                        offset_qzeros = cfg.checkpoint_offset_qzeros)
+                new_q_handles.append(new_q_handle)
+                self.prev_prescale = self.prescale
+                self.prescale = 1
+            self.q_handle = new_q_handle
+            self.q_tensors = new_q_tensors
+            # self.q_handle = None
 
         # Load FP16 linear layer without bias, optionally quantize to Q4
 
@@ -522,6 +553,87 @@ class ExLlamaV2Linear(ExLlamaV2Module):
         weight_approx = results[0] @ torch.diag(results[1]) @ results[2].T
 
         self.linear.weight = nn.Parameter(weight_approx.half())
+
+
+    def tp_split_sp(self, broadcast_type: int, dim = None):
+        assert self.q_handle is not None, \
+            "Can only split quantized tensor."
+        # assert all(x in self.q_tensors for x in [
+        #     "q_scale",
+        #     "q_scale_max",
+        #     "q_group_map",
+        #     "q_groups",
+        #     "q_weight"
+        # ]), "Can only split fully loaded EXL2 tensor."
+
+        cfg = self.model.config
+        ctx = self.model.tp_context
+        self.broadcast_type = broadcast_type
+        self.broadcast_type_out = BROADCAST_RS
+        split = ctx.get_split(broadcast_type)
+
+        if dim:
+            split = [(d, a * dim, b * dim) for (d, a, b) in split]
+
+        self.out_features_tp = [0] * ctx.num_devices
+        for dev, a, b in split:
+            self.out_features_tp[dev] = b - a
+        new_q_handle = []
+        new_q_tensors = []
+        new_temp_dq = []
+        # iterate split and self.q_tensors together
+        for (idx, a, b), q_tensors_ in zip(split, self.q_tensors):
+        # for idx, a, b in split:
+            s = b - a
+            if s == 0: continue
+
+            w = {
+                "q_scale": safe_move_tensor(q_tensors_["q_scale"], idx).contiguous(),
+                "q_scale_max": safe_move_tensor(q_tensors_["q_scale_max"], idx).contiguous(),
+                "q_group_map": safe_move_tensor(q_tensors_["q_group_map"], idx).contiguous(),
+                "q_groups": safe_move_tensor(q_tensors_["q_groups"], idx).contiguous(),
+                "q_weight": safe_move_tensor(q_tensors_["q_weight"], idx).contiguous()
+            }
+
+            if "q_perm" in q_tensors_:
+                w.update({
+                    "q_perm": safe_move_tensor(q_tensors_["q_perm"], idx).contiguous(),
+                    "q_invperm": safe_move_tensor(q_tensors_["q_invperm"], idx).contiguous(),
+                })
+
+            if "bias" in q_tensors_:
+                w["bias"] = safe_move_tensor(q_tensors_["bias"], idx).contiguous()
+
+            new_q_tensors.append(w)
+
+            device_context = self.model.get_device_context(idx)
+            device_context.begin_scratch_alloc()
+            new_temp_dq.append(device_context.get_scratch_slice(self.temp_dq_size(out_features = s)))
+            max_dq_rows = cfg.max_dq_size // s
+
+            new_q_handle.append(
+                ext_c.make_q_matrix_split(
+                    w["q_weight"],
+                    w.get("q_perm", none_tensor),
+                    w.get("q_invperm", none_tensor),
+                    w["q_scale"],
+                    w["q_scale_max"],
+                    w["q_groups"],
+                    w["q_group_map"],
+                    none_tensor,
+                    none_tensor,
+                    none_tensor,
+                    w.get("bias", none_tensor),
+                    new_temp_dq[-1],
+                    max_dq_rows
+                )
+            )
+
+        ext_c.free_q_matrix(self.q_handle)
+        self.q_handle = new_q_handle
+        self.q_tensors = new_q_tensors
+        self.temp_dq = new_temp_dq
+        self.is_tp = True
 
 
     def tp_split(self, broadcast_type: int, dim = None):
