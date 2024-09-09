@@ -1,12 +1,11 @@
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_TP, ExLlamaV2Tokenizer, Timer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2Sampler
 
 model_dir = "/data/qwen72b_5/Qwen2-72B-Instruct-exl2"
-print(f"Loading model from {model_dir}")
 config = ExLlamaV2Config(model_dir)
 config.arch_compat_overrides()
 config.no_graphs = True
@@ -63,25 +62,25 @@ print("-------------------------------------------------------------------------
 print(output)
 print()
 
-# Do a batched generation
+# # Do a batched generation
 
-prompts = [
-    "Once upon a time,",
-    "The secret to success is",
-    "There's no such thing as",
-    "Here's why you should adopt a cat:",
-]
+# prompts = [
+#     "Once upon a time,",
+#     "The secret to success is",
+#     "There's no such thing as",
+#     "Here's why you should adopt a cat:",
+# ]
 
-with Timer() as t_batched:
-    outputs = generator.generate(prompt = prompts, max_new_tokens = max_new_tokens, add_bos = True)
+# with Timer() as t_batched:
+#     outputs = generator.generate(prompt = prompts, max_new_tokens = max_new_tokens, add_bos = True)
 
-for idx, output in enumerate(outputs):
-    print("-----------------------------------------------------------------------------------")
-    print(f"- Batched completion #{idx + 1}")
-    print("-----------------------------------------------------------------------------------")
-    print(output)
-    print()
+# for idx, output in enumerate(outputs):
+#     print("-----------------------------------------------------------------------------------")
+#     print(f"- Batched completion #{idx + 1}")
+#     print("-----------------------------------------------------------------------------------")
+#     print(output)
+#     print()
 
-print("-----------------------------------------------------------------------------------")
-print(f"speed, bsz 1: {max_new_tokens / t_single.interval:.2f} tokens/second")
-print(f"speed, bsz {len(prompts)}: {max_new_tokens * len(prompts) / t_batched.interval:.2f} tokens/second")
+# print("-----------------------------------------------------------------------------------")
+# print(f"speed, bsz 1: {max_new_tokens / t_single.interval:.2f} tokens/second")
+# print(f"speed, bsz {len(prompts)}: {max_new_tokens * len(prompts) / t_batched.interval:.2f} tokens/second")

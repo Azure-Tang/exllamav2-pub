@@ -96,7 +96,7 @@ class ExLlamaV2:
         if self.config.arch.learned_pos_emb_key:
             pos_emb = ExLlamaV2PosEmbedding(self, self.config.arch.learned_pos_emb_key)
             self.modules += [pos_emb]
-        # self.config.num_hidden_layers = 2
+        # self.config.num_hidden_layers = 5 
         for layer_idx in range(self.config.num_hidden_layers):
 
             layer_key = f"model.layers.{layer_idx}"
@@ -980,9 +980,10 @@ class ExLlamaV2:
 
             x = module.forward(x, cache = cache, attn_params = attn_params, past_len = past_len, loras = loras, **kwargs)
 
-            # if preprocess_only and idx == self.last_kv_layer_idx:
-            #     x = None
-            #     break
+            # print(f"module {module.key}: {x=}")
+            if preprocess_only and idx == self.last_kv_layer_idx:
+                x = None
+                break
 
         # Advance cache
 

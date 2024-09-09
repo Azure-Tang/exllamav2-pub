@@ -168,6 +168,7 @@ class ExLlamaV2Linear(ExLlamaV2Module):
         elif isinstance(w, list):
             new_q_handles = []
             new_q_tensors = []
+            perm = []
             for i, w_ in enumerate(w):   
                 assert not cfg.load_in_q4, "Can't load quantized layer in Q4 mode"
                 if self.has_bias:
@@ -182,6 +183,20 @@ class ExLlamaV2Linear(ExLlamaV2Module):
                     self.temp_dq = none_tensor
                 new_q_tensors.append(w_)
 
+                if unmap and "q_perm" in w_:
+                    perm.append(w_["q_perm"].cpu())
+
+                    del w_["q_perm"]
+                    del w_["q_invperm"]
+                    # w["q_perm"] = torch.arange(0, w["q_perm"].shape[-1], dtype = w["q_perm"].dtype, device = w["q_perm"].device)
+                    # w["q_invperm"] = w["q_perm"].clone()
+
+                if output_map is not None:
+                    ext_c.tensor_remap(w_["q_weight"], output_map[i])
+                    ext_c.tensor_remap_4bit(w_["q_scale"], output_map[i])
+                    for k in w_.keys():
+                        w_[k] = safe_move_tensor(w_[k], self.device())
+
                 new_q_handle = ext.make_q_matrix(w_,
                                         self.temp_dq,
                                         prescale = self.prescale,
@@ -193,6 +208,7 @@ class ExLlamaV2Linear(ExLlamaV2Module):
             self.q_handle = new_q_handle
             self.q_tensors = new_q_tensors
             # self.q_handle = None
+            return perm
 
         # Load FP16 linear layer without bias, optionally quantize to Q4
 
@@ -628,8 +644,9 @@ class ExLlamaV2Linear(ExLlamaV2Module):
                     max_dq_rows
                 )
             )
-
-        ext_c.free_q_matrix(self.q_handle)
+        for h in (self.q_handle if isinstance(self.q_handle, list) else [self.q_handle]):
+            ext_c.free_q_matrix(h)
+        # ext_c.free_q_matrix(self.q_handle)
         self.q_handle = new_q_handle
         self.q_tensors = new_q_tensors
         self.temp_dq = new_temp_dq

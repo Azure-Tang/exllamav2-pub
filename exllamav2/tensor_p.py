@@ -151,7 +151,8 @@ class TPContext:
 
         # MLP split
 
-        id_split = [s * 128 for s in integer_split(cfg.intermediate_size // 128, gpu_split, 2)]
+        # id_split = [s * 128 for s in integer_split(cfg.intermediate_size // 128, gpu_split, 2)]
+        id_split = [s * 32 for s in integer_split(cfg.intermediate_size // 32, gpu_split, 4)]
         rs_split = [s * 32 for s in integer_split(cfg.hidden_size // 32, gpu_split, 8)]
 
         # Vocab split

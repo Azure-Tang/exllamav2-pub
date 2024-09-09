@@ -131,10 +131,10 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             self.up_proj.load(w2, device_context = device_context)
         else:
             if self.tp_degree == 2:
-                self.down_proj.load(device_context = device_context) 
-                if self.gate_proj is not None: self.gate_proj.load(device_context = device_context)
-                self.up_proj.load(device_context = device_context)
-            else:
+            #     self.down_proj.load(device_context = device_context) 
+            #     if self.gate_proj is not None: self.gate_proj.load(device_context = device_context)
+            #     self.up_proj.load(device_context = device_context)
+            # else:
                 down_map = self.down_proj.load(device_context = device_context, unmap = True)
                 if self.gate_proj is not None: self.gate_proj.load(device_context = device_context, output_map = down_map)
                 self.up_proj.load(device_context = device_context, output_map = down_map)
@@ -384,6 +384,8 @@ class ExLlamaV2MLP(ExLlamaV2Module):
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         hidden_states = self.model.tp_context.broadcast(0, hidden_states, BROADCAST_ID)
 
+        # print(f"11111 hidden_states: {hidden_states}")
+
         residual = hidden_states
 
         post_norm = self.pre_layernorm.forward_tp(hidden_states, output_split = True) \
@@ -391,6 +393,9 @@ class ExLlamaV2MLP(ExLlamaV2Module):
 
         gate = self.gate_proj.forward_tp(post_norm, output_split = True)
         up = self.up_proj.forward_tp(post_norm, output_split = True)
+        # print(f"222222 post_norm: {post_norm}")
+        # print(f"333333 gate: {gate}")
+        # print(f"333333 up: {up}")
 
         outputs = []
         for idx, hs in enumerate(post_norm):
@@ -405,6 +410,10 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             output *= up[idx]
             # output.clamp_(min = -65504.0, max = 65504.0)
             outputs.append(output)
+        # # print outputs
+        # for idx, output in enumerate(outputs):
+        #     print(f"dev: {idx}, outputs: {output}")
+
 
         # outputs = self.model.tp_context.allgather(1, outputs, BROADCAST_ID, BROADCAST_ID)
 

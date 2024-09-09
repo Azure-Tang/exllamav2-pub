@@ -6,7 +6,7 @@ Author       : Azure-Tang
 Date         : 2024-09-05 03:49:40
 Version      : 1.0.0
 LastEditors  : Azure 
-LastEditTime : 2024-09-05 11:42:16
+LastEditTime : 2024-09-07 16:38:26
 Copyright (c) 2024 by KVCache.AI, All Rights Reserved. 
 '''
 
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from exllamav2 import ExLlamaV2, ExLlamaV2Config, ExLlamaV2Cache_TP, ExLlamaV2Tokenizer, Timer
 from exllamav2.generator import ExLlamaV2DynamicGenerator, ExLlamaV2Sampler
 
-model_dir = "/model/Qwen1.5-7B/3.0bpw_tp2"
+model_dir = "/data/Qwen2-72B-Instruct/4_0bpw"
 config = ExLlamaV2Config(model_dir)
 config.arch_compat_overrides()
 config.no_graphs = True
@@ -73,25 +73,25 @@ print("-------------------------------------------------------------------------
 print(output)
 print()
 
-# Do a batched generation
+# # Do a batched generation
 
-prompts = [
-    "Once upon a time,",
-    "The secret to success is",
-    "There's no such thing as",
-    "Here's why you should adopt a cat:",
-]
+# prompts = [
+#     "Once upon a time,",
+#     "The secret to success is",
+#     "There's no such thing as",
+#     "Here's why you should adopt a cat:",
+# ]
 
-with Timer() as t_batched:
-    outputs = generator.generate(prompt = prompts, max_new_tokens = max_new_tokens, add_bos = True)
+# with Timer() as t_batched:
+#     outputs = generator.generate(prompt = prompts, max_new_tokens = max_new_tokens, add_bos = True)
 
-for idx, output in enumerate(outputs):
-    print("-----------------------------------------------------------------------------------")
-    print(f"- Batched completion #{idx + 1}")
-    print("-----------------------------------------------------------------------------------")
-    print(output)
-    print()
+# for idx, output in enumerate(outputs):
+#     print("-----------------------------------------------------------------------------------")
+#     print(f"- Batched completion #{idx + 1}")
+#     print("-----------------------------------------------------------------------------------")
+#     print(output)
+#     print()
 
-print("-----------------------------------------------------------------------------------")
-print(f"speed, bsz 1: {max_new_tokens / t_single.interval:.2f} tokens/second")
-print(f"speed, bsz {len(prompts)}: {max_new_tokens * len(prompts) / t_batched.interval:.2f} tokens/second")
+# print("-----------------------------------------------------------------------------------")
+# print(f"speed, bsz 1: {max_new_tokens / t_single.interval:.2f} tokens/second")
+# print(f"speed, bsz {len(prompts)}: {max_new_tokens * len(prompts) / t_batched.interval:.2f} tokens/second")
