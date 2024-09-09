@@ -111,8 +111,9 @@ class TPContext:
             gpu_memory = get_all_gpu_memory()
             gpu_split = [0] * (max(gpu_memory.keys()) + 1)
             for k, v in gpu_memory.items():
-                gpu_split[k] = v["total"]
+                # gpu_split[k] = v["total"]
                 # gpu_split[k] = v["free"]
+                gpu_split[k] = 24*1024**3
         else:
             gpu_split = [gs * 1024 for gs in gpu_split]
 

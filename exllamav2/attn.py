@@ -717,8 +717,9 @@ class ExLlamaV2Attention(ExLlamaV2Module):
 
         k_cache = [x.view(x.shape[1] // page_size, page_size, x.shape[2], x.shape[3]) for x in k_cache_f]
         v_cache = [x.view(x.shape[1] // page_size, page_size, x.shape[2], x.shape[3]) for x in v_cache_f]
-
-        hidden_states = self.model.tp_context.broadcast(0, hidden_states, BROADCAST_KV, dim = cfg.head_dim)
+        if not isinstance(hidden_states, list):
+            output_split = True
+            hidden_states = self.model.tp_context.broadcast(0, hidden_states, BROADCAST_KV, dim = cfg.head_dim)
 
         residual = hidden_states
 
@@ -833,9 +834,11 @@ class ExLlamaV2Attention(ExLlamaV2Module):
 
         # if self.post_layernorm:  # TODO: ...
         #     hidden_states = self.post_layernorm.forward(hidden_states)
-
-        hidden_states = hidden_states[0].view(batch_size, q_len, hidden_states[0].shape[-1])
-        # hidden_states = [ hs.view(batch_size, q_len, hs.shape[-1]) for hs in hidden_states ]
+        if output_split:
+            # hidden_states = hidden_states[0].view(batch_size, q_len, hidden_states[0].shape[-1])
+            hidden_states = [ hs.view(batch_size, q_len, hs.shape[-1]) for hs in hidden_states ]
+        else:
+            hidden_states = hidden_states[0].view(batch_size, q_len, hidden_states[0].shape[-1])
         return hidden_states
 
 

@@ -379,12 +379,15 @@ class ExLlamaV2MLP(ExLlamaV2Module):
     ) -> torch.Tensor | dict[str: torch.Tensor]:
 
         cfg = self.model.config
+        
+        output_split = False
+        if not isinstance(hidden_states, list):
+            output_split = True
+            hidden_states = self.model.tp_context.broadcast(0, hidden_states, BROADCAST_ID)
 
-        batch_size, q_len, _ = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
-        hidden_states = self.model.tp_context.broadcast(0, hidden_states, BROADCAST_ID)
-
-        # print(f"11111 hidden_states: {hidden_states}")
+        batch_size, q_len, _ = hidden_states[0].shape
+        hidden_states = [hs.view(-1, hs.shape[-1]) for hs in hidden_states]
+        # hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
 
         residual = hidden_states
 
@@ -393,9 +396,6 @@ class ExLlamaV2MLP(ExLlamaV2Module):
 
         gate = self.gate_proj.forward_tp(post_norm, output_split = True)
         up = self.up_proj.forward_tp(post_norm, output_split = True)
-        # print(f"222222 post_norm: {post_norm}")
-        # print(f"333333 gate: {gate}")
-        # print(f"333333 up: {up}")
 
         outputs = []
         for idx, hs in enumerate(post_norm):
@@ -410,21 +410,24 @@ class ExLlamaV2MLP(ExLlamaV2Module):
             output *= up[idx]
             # output.clamp_(min = -65504.0, max = 65504.0)
             outputs.append(output)
-        # # print outputs
-        # for idx, output in enumerate(outputs):
-        #     print(f"dev: {idx}, outputs: {output}")
 
 
         # outputs = self.model.tp_context.allgather(1, outputs, BROADCAST_ID, BROADCAST_ID)
 
         down = self.down_proj.forward_tp_row(outputs, output_split = True)
 
-        if self.has_residual:
-            self.model.tp_context.add_residual_sp(down, residual)
 
         # down = self.model.tp_context.gather(0, down, BROADCAST_RS)
         down = self.model.tp_context.all_reduce_sp(down)
-        down = down[0].view(batch_size, q_len, down[0].shape[-1])
+        if self.has_residual:
+            self.model.tp_context.add_residual_sp(down, residual)
+
+        if output_split:
+            # down = down[0].view(batch_size, q_len, down[0].shape[-1])
+            down = [dn.view(batch_size, q_len, dn.shape[-1]) for dn in down]
+        else:
+            down = down[0].view(batch_size, q_len, down[0].shape[-1])
+            
         return down
 
 
